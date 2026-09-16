@@ -21,6 +21,9 @@ st.set_page_config(page_title="My Google Maps Reviews", page_icon="🗺️", lay
 RAW_REVIEWS = Path("data/raw/Reviews.json")
 CARTO_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 SPATIAL_KEY = "spatial_selection_ids"
+NYC_LAT = 40.7128
+NYC_LON = -74.0060
+NYC_ZOOM = 9.2
 
 RATING_COLORS = {
     "5 ★": "#00843D",
@@ -230,17 +233,20 @@ def explorer_page(df: pd.DataFrame):
             "longitude": False,
         },
         custom_data=["row_id"],
-        zoom=3,
+        zoom=NYC_ZOOM,
+        center={"lat": NYC_LAT, "lon": NYC_LON},
         height=610,
         category_orders={"rating_label": ["5 ★", "4 ★", "3 ★", "2 ★", "1 ★"]},
     )
     fig.update_traces(marker={"size": 11, "opacity": 1.0})
     fig.update_layout(
         map_style="carto-positron",
+        map={"center": {"lat": NYC_LAT, "lon": NYC_LON}, "zoom": NYC_ZOOM},
         margin=dict(l=0, r=0, t=10, b=0),
         legend_title_text="My rating",
         dragmode="pan",
         clickmode="event+select",
+        uirevision="keep-review-map-view",
     )
 
     st.caption("Click a marker to select it. Drag to pan. Use the map toolbar for lasso or box selection.")
@@ -251,7 +257,11 @@ def explorer_page(df: pd.DataFrame):
         key="review_map",
         on_select="rerun",
         selection_mode=("points", "box", "lasso"),
-        config={"displaylogo": False, "scrollZoom": True},
+        config={
+            "displaylogo": False,
+            "scrollZoom": True,
+            "doubleClick": False,
+        },
     )
 
     selected_points = getattr(event, "selection", {}).get("points", []) if event is not None else []
@@ -272,7 +282,7 @@ def explorer_page(df: pd.DataFrame):
     if st.session_state.get(SPATIAL_KEY):
         st.info(
             f"Map selection is active: {len(selected):,} review(s). "
-            "This same selection now applies to Heatmap, Categories, and Reviews & Ratings."
+            "This same selection applies to Heatmap, Categories, and Reviews & Ratings."
         )
 
     st.markdown(
