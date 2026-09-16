@@ -1,4 +1,7 @@
 streamlit
+pandas
+plotly
+pydeck
 requests
 google-auth
 google-auth-oauthlib
