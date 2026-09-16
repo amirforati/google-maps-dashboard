@@ -20,6 +20,7 @@ st.set_page_config(page_title="My Google Maps Reviews", page_icon="🗺️", lay
 
 RAW_REVIEWS = Path("data/raw/Reviews.json")
 CARTO_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+SPATIAL_KEY = "spatial_selection_ids"
 
 RATING_COLORS = {
     "5 ★": "#00843D",
@@ -28,6 +29,9 @@ RATING_COLORS = {
     "2 ★": "#E85D04",
     "1 ★": "#C1121F",
 }
+
+if SPATIAL_KEY not in st.session_state:
+    st.session_state[SPATIAL_KEY] = []
 
 
 @st.cache_data(show_spinner=False)
@@ -42,7 +46,6 @@ def get_data():
 
 
 def clean_dashboard_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Hide unusable Takeout rows such as Google's 'Unknown place' records."""
     if df.empty:
         return df
 
@@ -50,6 +53,13 @@ def clean_dashboard_data(df: pd.DataFrame) -> pd.DataFrame:
     names = clean["place_name"].fillna("").astype(str).str.strip().str.casefold()
     clean = clean[~names.isin({"", "unknown", "unknown place"})].copy()
     return clean
+
+
+def apply_spatial_selection(df: pd.DataFrame) -> pd.DataFrame:
+    selected_ids = st.session_state.get(SPATIAL_KEY, [])
+    if not selected_ids:
+        return df
+    return df[df.index.astype(str).isin(selected_ids)].copy()
 
 
 def save_uploaded_reviews(uploaded_file):
@@ -189,15 +199,15 @@ def add_review_form():
 
 def explorer_page(df: pd.DataFrame):
     st.subheader("🗺️ Explorer")
-    metrics(df)
+    metrics_slot = st.container()
 
     if df.empty:
+        with metrics_slot:
+            metrics(df)
         st.info("No reviews match the current filters.")
         return
 
     map_df = df.dropna(subset=["latitude", "longitude"]).copy()
-
-    # Never map invalid 0,0 coordinates. These appear in a few Takeout records.
     invalid_zero = map_df["latitude"].abs().lt(0.000001) & map_df["longitude"].abs().lt(0.000001)
     map_df = map_df[~invalid_zero].copy()
 
@@ -233,7 +243,7 @@ def explorer_page(df: pd.DataFrame):
         clickmode="event+select",
     )
 
-    st.caption("Click a marker to select it. Press and drag to pan. Lasso and box selection remain available in the map toolbar.")
+    st.caption("Click a marker to select it. Drag to pan. Use the map toolbar for lasso or box selection.")
 
     event = st.plotly_chart(
         fig,
@@ -241,13 +251,9 @@ def explorer_page(df: pd.DataFrame):
         key="review_map",
         on_select="rerun",
         selection_mode=("points", "box", "lasso"),
-        config={
-            "displaylogo": False,
-            "scrollZoom": True,
-        },
+        config={"displaylogo": False, "scrollZoom": True},
     )
 
-    selected = df
     selected_points = getattr(event, "selection", {}).get("points", []) if event is not None else []
     if selected_points:
         row_ids = []
@@ -256,11 +262,22 @@ def explorer_page(df: pd.DataFrame):
             if isinstance(customdata, (list, tuple)) and customdata:
                 row_ids.append(str(customdata[0]))
         if row_ids:
-            selected = df[df.index.astype(str).isin(row_ids)]
+            st.session_state[SPATIAL_KEY] = list(dict.fromkeys(row_ids))
+
+    selected = apply_spatial_selection(df)
+
+    with metrics_slot:
+        metrics(selected)
+
+    if st.session_state.get(SPATIAL_KEY):
+        st.info(
+            f"Map selection is active: {len(selected):,} review(s). "
+            "This same selection now applies to Heatmap, Categories, and Reviews & Ratings."
+        )
 
     st.markdown(
         f"**Showing {len(selected):,} review(s)**"
-        + (" from the map selection" if len(selected) != len(df) else "")
+        + (" from the map selection" if st.session_state.get(SPATIAL_KEY) else "")
     )
 
     display = selected[
@@ -314,7 +331,7 @@ def heatmap_page(df: pd.DataFrame):
     geo = geo[~invalid_zero].copy()
 
     if geo.empty:
-        st.info("No mapped reviews match the current filters.")
+        st.info("No mapped reviews match the current filters or map selection.")
         return
 
     mode = st.radio(
@@ -381,7 +398,7 @@ def categories_page(df: pd.DataFrame):
     )
 
     if df.empty:
-        st.info("No reviews match the current filters.")
+        st.info("No reviews match the current filters or map selection.")
         return
 
     cuisine_options = sorted([x for x in df["cuisine"].dropna().unique() if x])
@@ -445,7 +462,7 @@ def ratings_page(df: pd.DataFrame):
     st.subheader("⭐ Reviews & Ratings")
 
     if df.empty:
-        st.info("No reviews match the current filters.")
+        st.info("No reviews match the current filters or map selection.")
         return
 
     available_ratings = sorted([int(x) for x in df["rating"].dropna().unique()], reverse=True)
@@ -515,7 +532,8 @@ if not RAW_REVIEWS.exists():
 
 add_review_form()
 
-all_reviews = clean_dashboard_data(get_data())
+raw_reviews = get_data()
+all_reviews = clean_dashboard_data(raw_reviews)
 if all_reviews.empty:
     st.info("Upload Reviews.json or add a manual review to start.")
     st.stop()
@@ -523,11 +541,20 @@ if all_reviews.empty:
 filtered_reviews = apply_filters(all_reviews)
 page = st.sidebar.radio("Page", ["🗺️ Explorer", "🔥 Heatmap", "🍽️ Categories", "⭐ Reviews & Ratings"])
 
+if st.session_state.get(SPATIAL_KEY):
+    spatial_view = apply_spatial_selection(filtered_reviews)
+    st.sidebar.info(f"Map selection: {len(spatial_view):,} review(s)")
+    if st.sidebar.button("Clear map selection", use_container_width=True):
+        st.session_state[SPATIAL_KEY] = []
+        st.rerun()
+
 if page == "🗺️ Explorer":
     explorer_page(filtered_reviews)
-elif page == "🔥 Heatmap":
-    heatmap_page(filtered_reviews)
-elif page == "🍽️ Categories":
-    categories_page(filtered_reviews)
 else:
-    ratings_page(filtered_reviews)
+    page_reviews = apply_spatial_selection(filtered_reviews)
+    if page == "🔥 Heatmap":
+        heatmap_page(page_reviews)
+    elif page == "🍽️ Categories":
+        categories_page(page_reviews)
+    else:
+        ratings_page(page_reviews)
