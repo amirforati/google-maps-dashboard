@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -180,7 +181,10 @@ def _push_manual_reviews_to_github(csv_text: str, github_token: str) -> None:
 def save_manual_review(record: dict, github_token: str | None = None) -> bool:
     """Save locally and optionally commit the updated CSV to the private GitHub repo.
 
-    Returns True when the GitHub persistence step succeeded, otherwise False.
+    When no token is passed explicitly, the function reads GITHUB_TOKEN from the
+    environment. Streamlit Community Cloud exposes root-level app secrets as
+    environment variables, so adding GITHUB_TOKEN in the app's Secrets settings
+    makes manual additions durable across app restarts.
     """
     MANUAL_FILE.parent.mkdir(parents=True, exist_ok=True)
     new_row = pd.DataFrame([record])
@@ -193,8 +197,9 @@ def save_manual_review(record: dict, github_token: str | None = None) -> bool:
     csv_text = combined.to_csv(index=False)
     MANUAL_FILE.write_text(csv_text, encoding="utf-8")
 
-    if github_token:
-        _push_manual_reviews_to_github(csv_text, github_token)
+    token = github_token or os.getenv("GITHUB_TOKEN")
+    if token:
+        _push_manual_reviews_to_github(csv_text, token)
         return True
     return False
 
