@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+import requests
 
 RAW_DIR = Path("data/raw")
 MANUAL_FILE = Path("data/manual_reviews.csv")
+GITHUB_REPO = "amirforati/google-maps-dashboard"
+GITHUB_BRANCH = "main"
+GITHUB_MANUAL_PATH = "data/manual_reviews.csv"
 
 STATE_RE = re.compile(r",\s*([A-Z]{2})\s+\d{5}(?:-\d{4})?(?:,|$)")
 
@@ -89,7 +94,6 @@ def parse_takeout_reviews(source) -> pd.DataFrame:
         rating = props.get("five_star_rating_published")
         review_text = props.get("review_text_published", "") or ""
 
-        # Google can include activity rows with rating 0. They are not actual rated reviews.
         if rating in (None, 0):
             continue
 
@@ -142,7 +146,42 @@ def load_manual_reviews() -> pd.DataFrame:
     return df
 
 
-def save_manual_review(record: dict) -> None:
+def _push_manual_reviews_to_github(csv_text: str, github_token: str) -> None:
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_MANUAL_PATH}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    current = requests.get(
+        api_url,
+        headers=headers,
+        params={"ref": GITHUB_BRANCH},
+        timeout=30,
+    )
+
+    payload = {
+        "message": "Add manual restaurant review from Streamlit app",
+        "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
+        "branch": GITHUB_BRANCH,
+    }
+
+    if current.status_code == 200:
+        payload["sha"] = current.json()["sha"]
+    elif current.status_code != 404:
+        raise RuntimeError(f"GitHub read failed ({current.status_code}): {current.text[:300]}")
+
+    saved = requests.put(api_url, headers=headers, json=payload, timeout=30)
+    if saved.status_code not in (200, 201):
+        raise RuntimeError(f"GitHub write failed ({saved.status_code}): {saved.text[:300]}")
+
+
+def save_manual_review(record: dict, github_token: str | None = None) -> bool:
+    """Save locally and optionally commit the updated CSV to the private GitHub repo.
+
+    Returns True when the GitHub persistence step succeeded, otherwise False.
+    """
     MANUAL_FILE.parent.mkdir(parents=True, exist_ok=True)
     new_row = pd.DataFrame([record])
     if MANUAL_FILE.exists():
@@ -150,7 +189,14 @@ def save_manual_review(record: dict) -> None:
         combined = pd.concat([old, new_row], ignore_index=True)
     else:
         combined = new_row
-    combined.to_csv(MANUAL_FILE, index=False)
+
+    csv_text = combined.to_csv(index=False)
+    MANUAL_FILE.write_text(csv_text, encoding="utf-8")
+
+    if github_token:
+        _push_manual_reviews_to_github(csv_text, github_token)
+        return True
+    return False
 
 
 def combine_reviews(takeout_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.DataFrame:
@@ -160,8 +206,16 @@ def combine_reviews(takeout_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.Dat
 
     df = pd.concat(frames, ignore_index=True, sort=False)
     for col in [
-        "place_name", "review_text", "address", "city", "state", "country",
-        "google_maps_url", "category", "cuisine", "source"
+        "place_name",
+        "review_text",
+        "address",
+        "city",
+        "state",
+        "country",
+        "google_maps_url",
+        "category",
+        "cuisine",
+        "source",
     ]:
         if col not in df.columns:
             df[col] = ""
