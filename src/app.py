@@ -21,6 +21,14 @@ st.set_page_config(page_title="My Google Maps Reviews", page_icon="🗺️", lay
 RAW_REVIEWS = Path("data/raw/Reviews.json")
 CARTO_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
 
+RATING_COLORS = {
+    "5 ★": "#00843D",
+    "4 ★": "#0072CE",
+    "3 ★": "#F5A000",
+    "2 ★": "#E85D04",
+    "1 ★": "#C1121F",
+}
+
 
 @st.cache_data(show_spinner=False)
 def load_takeout_cached(path_string: str):
@@ -31,6 +39,17 @@ def get_data():
     takeout = load_takeout_cached(str(RAW_REVIEWS)) if RAW_REVIEWS.exists() else pd.DataFrame()
     manual = load_manual_reviews()
     return combine_reviews(takeout, manual)
+
+
+def clean_dashboard_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Hide unusable Takeout rows such as Google's 'Unknown place' records."""
+    if df.empty:
+        return df
+
+    clean = df.copy()
+    names = clean["place_name"].fillna("").astype(str).str.strip().str.casefold()
+    clean = clean[~names.isin({"", "unknown", "unknown place"})].copy()
+    return clean
 
 
 def save_uploaded_reviews(uploaded_file):
@@ -177,6 +196,11 @@ def explorer_page(df: pd.DataFrame):
         return
 
     map_df = df.dropna(subset=["latitude", "longitude"]).copy()
+
+    # Never map invalid 0,0 coordinates. These appear in a few Takeout records.
+    invalid_zero = map_df["latitude"].abs().lt(0.000001) & map_df["longitude"].abs().lt(0.000001)
+    map_df = map_df[~invalid_zero].copy()
+
     map_df["rating_label"] = map_df["rating"].astype(int).astype(str) + " ★"
     map_df["row_id"] = map_df.index.astype(str)
 
@@ -185,6 +209,7 @@ def explorer_page(df: pd.DataFrame):
         lat="latitude",
         lon="longitude",
         color="rating_label",
+        color_discrete_map=RATING_COLORS,
         hover_name="place_name",
         hover_data={
             "rating_label": True,
@@ -199,12 +224,16 @@ def explorer_page(df: pd.DataFrame):
         height=610,
         category_orders={"rating_label": ["5 ★", "4 ★", "3 ★", "2 ★", "1 ★"]},
     )
+    fig.update_traces(marker={"size": 11, "opacity": 1.0})
     fig.update_layout(
         map_style="carto-positron",
         margin=dict(l=0, r=0, t=10, b=0),
         legend_title_text="My rating",
-        dragmode="lasso",
+        dragmode="pan",
+        clickmode="event+select",
     )
+
+    st.caption("Click a marker to select it. Press and drag to pan. Lasso and box selection remain available in the map toolbar.")
 
     event = st.plotly_chart(
         fig,
@@ -212,6 +241,10 @@ def explorer_page(df: pd.DataFrame):
         key="review_map",
         on_select="rerun",
         selection_mode=("points", "box", "lasso"),
+        config={
+            "displaylogo": False,
+            "scrollZoom": True,
+        },
     )
 
     selected = df
@@ -277,6 +310,9 @@ def heatmap_page(df: pd.DataFrame):
     metrics(df)
 
     geo = df.dropna(subset=["latitude", "longitude"]).copy()
+    invalid_zero = geo["latitude"].abs().lt(0.000001) & geo["longitude"].abs().lt(0.000001)
+    geo = geo[~invalid_zero].copy()
+
     if geo.empty:
         st.info("No mapped reviews match the current filters.")
         return
@@ -285,7 +321,7 @@ def heatmap_page(df: pd.DataFrame):
         "Heatmap mode",
         ["Review density", "Rating weighted", "5-star density", "Low-rating density"],
         horizontal=True,
-        help="Rating weighted now strongly emphasizes 5-star reviews instead of using a nearly linear 1–5 weight.",
+        help="Rating weighted strongly emphasizes 5-star reviews instead of using a nearly linear 1–5 weight.",
     )
     radius = st.slider("Heat radius", 15, 80, 35, 5)
 
@@ -294,7 +330,6 @@ def heatmap_page(df: pd.DataFrame):
     if mode == "Review density":
         heat["weight"] = 1.0
     elif mode == "Rating weighted":
-        # Non-linear weights make high-rated clusters visibly different from simple review density.
         rating_weights = {1: 0.01, 2: 0.03, 3: 0.08, 4: 0.25, 5: 1.00}
         heat["weight"] = heat["rating"].map(rating_weights).fillna(0.01)
     elif mode == "5-star density":
@@ -465,12 +500,8 @@ def ratings_page(df: pd.DataFrame):
 st.title("My Google Maps Reviews")
 st.caption("A private spatial dashboard of places you reviewed.")
 
-if RAW_REVIEWS.exists():
-    st.caption(
-        "Data note: Reviews.json is stored in this Codespace only. It is excluded from Git, so deleting the Codespace deletes this copy."
-    )
-else:
-    st.warning("Reviews.json is not in data/raw yet.")
+if not RAW_REVIEWS.exists():
+    st.warning("Reviews.json is not available in the app.")
     uploaded = st.file_uploader("Upload your Google Takeout Reviews.json", type=["json"])
     if uploaded is not None:
         try:
@@ -484,7 +515,7 @@ else:
 
 add_review_form()
 
-all_reviews = get_data()
+all_reviews = clean_dashboard_data(get_data())
 if all_reviews.empty:
     st.info("Upload Reviews.json or add a manual review to start.")
     st.stop()
