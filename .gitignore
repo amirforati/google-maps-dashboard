@@ -5,3 +5,5 @@ token.json
 *.duckdb
 __pycache__/
 .streamlit/secrets.toml
+data/raw/
+*.zip
