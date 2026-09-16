@@ -1,0 +1,7 @@
+.env
+client_secret.json
+token.json
+*.db
+*.duckdb
+__pycache__/
+.streamlit/secrets.toml
